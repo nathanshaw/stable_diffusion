@@ -120,6 +120,10 @@ def getBatchString(current_idx, batch_size):
     num_digits = len(str(batch_size))
     return "{:0{}}".format(current_idx, num_digits)
 
+def getStepString(current_idx, total_steps, step_hop):
+    num_digits = len(str(total_steps))
+    return "{:0{}}".format(current_idx * step_hop, num_digits)
+
 def generateOutputNames(prompts, batch_size, seed):
     time_str = datetime.now().strftime("%Y_%m_%d_%H_")
     path = os.getcwd() + "/output_images/"
@@ -129,11 +133,26 @@ def generateOutputNames(prompts, batch_size, seed):
         for batch in range(batch_size):
             _name = time_str + name.replace(' ', '_')[:40] + "_s" + str(seed) + "_"
             b_string = getBatchString(batch, batch_size)
-            prompt_names.append(path + _name + str(batch) + ".png")
+            prompt_names.append(path + _name + str(b_string) + ".png")
             print("image name generated: {}".format(prompt_names[-1]))
     return prompt_names
 
+def generateOutputNamesWithSteps(prompts, batch_size, seed, steps, step_hop):
+    time_str = datetime.now().strftime("%Y_%m_%d_%H_")
+    path = os.getcwd() + "/output_images/"
+    prompt_names = []
+    print("prompts are {}".format(prompts))
+    for name in prompts:
+        for batch in range(batch_size):
+            for step in range(steps//step_hop):
+                _name = time_str + name.replace(' ', '_')[:40] + "_s" + str(seed) + "_"
+                b_string = getBatchString(batch, batch_size) + "_step" + getStepString(step, steps, step_hop)
+                prompt_names.append(path + _name + str(b_string) + ".png")
+                print("image name generated: {}".format(prompt_names[-1]))
+    return prompt_names
+
 def createModel(img_width, img_height, jit_compile=True):
+    keras.mixed_precision.set_global_policy("float32")
     model = keras_cv.models.StableDiffusion(
         img_width=img_width, img_height=img_height, jit_compile=jit_compile)
     return model
@@ -149,30 +168,60 @@ def main(arg_dict):
     seed = arg_dict["seed"]
     plot_output = arg_dict["plot_output"]
     upscale_factor = arg_dict["upscale"]
-
+    export_steps = arg_dict["export_steps"]
+    step_hop = arg_dict["export_hop"]
+    guidance_scale = arg_dict["guidance"]
 
     model = createModel(output_width, output_height)
+
     # for automatically labling each output file uniquely
     print("prompts are: {}".format(prompts))
-    output_names = generateOutputNames(prompts, batch_size, seed)
-    print("output names: {}".format(output_names))
     idx = 0
     #########################################################
-    for prompt in prompts:
-        for batch in range(batch_size):
-            print("creating batch # {} for prompt {}".format(batch, prompt))
-            image = model.text_to_image(
-                prompt,
-                seed=seed,
-                num_steps=steps,
-                batch_size=1
-            )      
-            save_image(image, output_names[idx])
-            if upscale_factor != 1.0:
-                upscale_image(output_names[idx], upscale_factor)
-            idx += 1
+    if export_steps == False:
+        output_names = generateOutputNames(prompts, batch_size, seed)
+        print("output names: {}".format(output_names))
+        for prompt in prompts:
+            for batch in range(batch_size):
+                print("creating batch # {} for prompt {}".format(batch, prompt))
+                image = model.text_to_image(
+                    prompt,
+                    seed=seed,
+                    num_steps=steps,
+                    batch_size=1,
+                    unconditional_guidance_scale=guidance_scale
+                )      
+                save_image(image, output_names[idx])
+                if upscale_factor != 1.0:
+                    upscale_image(output_names[idx], upscale_factor)
+                idx += 1
     
-        keras.backend.clear_session()  # Clear session to preserve memory
+            keras.backend.clear_session()  # Clear session to preserve memory
+    else:
+        # create a copy of the model to save progress
+        # progress_model = keras.models.clone_model(model)
+        # progress_model.set_weights(model.get_weights())
+        output_names = generateOutputNamesWithSteps(prompts, batch_size, seed, steps, step_hop)
+        print("output name length: {}".format(len(output_names)))
+        for prompt in prompts:
+            for batch in range(batch_size):
+                print("creating batch # {} for prompt {}".format(batch, prompt))
+                for step in range(step_hop, steps, step_hop):
+                    image = model.text_to_image(
+                        prompt,
+                        seed=seed,
+                        num_steps=step,
+                        batch_size=1,
+                        unconditional_guidance_scale=guidance_scale
+                    )      
+                    save_image(image, output_names[idx])
+                    if upscale_factor != 1.0:
+                        upscale_image(output_names[idx], upscale_factor)
+                    idx += 1
+                    # model.set_weights(model.get_weights())
+                seed += 1
+    
+            keras.backend.clear_session()  # Clear session to preserve memory
 
     if (plot_output):
         plot_images(image)
@@ -190,13 +239,16 @@ if __name__ == '__main__':
     parser.add_argument("--prompts", nargs="+", type=str, help="list of prompts for the program to generate images based on",
                         default="happy black cat floating on clouds of love")
     parser.add_argument("--batch_size", type=int,
-                        help="how many images to generate", default=4)
+                        help="how many images to generate", default=1)
     parser.add_argument(
-        "--steps", type=int, help="number of steps contained in each epoch", default=100)
+        "--steps", type=int, help="number of steps contained in each epoch", default=50)
     parser.add_argument("--plot_output", type=bool, help="if set to true, program will plot the output images", default=False)
     parser.add_argument(
         "--seed", type=int, help="seed for random number generator, for producing consistant results", default=random.randint(0, 99999))    
     parser.add_argument("--upscale", type=float, default=1.0, help="After generating the images they will be upscaled to this factor")
+    parser.add_argument("--export_steps", type=bool, default=False, help="If set to true, the program will export intermediate steps according to the --export_hop value")
+    parser.add_argument("--export_hop", type=int, default=5, help="How often to export images during generation process when --export-steps is set to True") 
+    parser.add_argument("--guidance", type=float, default=9.0, help="This is a measure of how closely the program follows the prompt (values of 5.0 - 15.0 work best)")
     args = vars(parser.parse_args())
 
     main(args)
