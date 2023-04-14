@@ -128,13 +128,24 @@ def generateOutputNames(prompts, batch_size, seed):
     time_str = datetime.now().strftime("%Y_%m_%d_%H_")
     path = os.getcwd() + "/output_images/"
     prompt_names = []
-    print("prompts are {}".format(prompts))
-    for name in prompts:
+    print("generateOutputNames() prompts are {}".format(prompts))
+    if type(prompts) is list or np.array(prompts).ndim == 2:
+        print("prompts dimension is 2, assuming it is a list of strings")
+        for name in prompts:
+            for batch in range(batch_size):
+                _name = time_str + name.replace(' ', '_')[:40] + "_s" + str(seed) + "_b"
+                b_string = getBatchString(batch, batch_size)
+                prompt_names.append(path + _name + str(b_string) + ".png")
+                print("image name generated: {}".format(prompt_names[-1]))
+    elif type(prompts) is str:
+        print("prompts type is string")
         for batch in range(batch_size):
-            _name = time_str + name.replace(' ', '_')[:40] + "_s" + str(seed) + "_"
-            b_string = getBatchString(batch, batch_size)
-            prompt_names.append(path + _name + str(b_string) + ".png")
-            print("image name generated: {}".format(prompt_names[-1]))
+                _name = time_str + prompts.replace(' ', '_')[:40] + "_s" + str(seed) + "_b"
+                b_string = getBatchString(batch, batch_size)
+                prompt_names.append(path + _name + str(b_string) + ".png")
+                print("image name generated: {}".format(prompt_names[-1]))
+    else:
+        print("ERROR, promps is not a list and is not a str")
     return prompt_names
 
 def generateOutputNamesWithSteps(prompts, batch_size, seed, steps, step_hop):
@@ -145,23 +156,21 @@ def generateOutputNamesWithSteps(prompts, batch_size, seed, steps, step_hop):
     for name in prompts:
         for batch in range(batch_size):
             for step in range(steps//step_hop):
-                _name = time_str + name.replace(' ', '_')[:40] + "_s" + str(seed) + "_"
+                _name = time_str + name.replace(' ', '_')[:60] + "_s" + str(seed) + "_"
                 b_string = getBatchString(batch, batch_size) + "_step" + getStepString(step, steps, step_hop)
                 prompt_names.append(path + _name + str(b_string) + ".png")
                 print("image name generated: {}".format(prompt_names[-1]))
     return prompt_names
 
-def createModel(img_width, img_height, jit_compile=True):
+def createModel(img_width, img_height, jit_compile=False):
     keras.mixed_precision.set_global_policy("float32")
     model = keras_cv.models.StableDiffusion(
         img_width=img_width, img_height=img_height, jit_compile=jit_compile)
     return model
 
-def main(arg_dict):
+def main(model, arg_dict):
     # create a basic naming root for any files that we create and want to save during this session
     start_time = time.time()
-    output_width = arg_dict["output_width"]
-    output_height = arg_dict["output_height"]
     prompts = arg_dict["prompts"]
     batch_size = arg_dict["batch_size"]
     steps = arg_dict["steps"]
@@ -172,15 +181,21 @@ def main(arg_dict):
     step_hop = arg_dict["export_hop"]
     guidance_scale = arg_dict["guidance"]
 
-    model = createModel(output_width, output_height)
-
     # for automatically labling each output file uniquely
-    print("prompts are: {}".format(prompts))
+    print("{} prompts of shape {} are: {}".format(type(prompts), np.array(prompts).shape, prompts))
     idx = 0
+
+    if type(prompts) is str:
+        prompts = [prompts]
     #########################################################
     if export_steps == False:
         output_names = generateOutputNames(prompts, batch_size, seed)
-        print("output names: {}".format(output_names))
+        print(len(prompts))
+        print(batch_size)
+        # since we are only exporing catch
+        assert len(output_names) == batch_size * len(prompts),"WARNING, there should be {} output names not {}: {}".format(batch_size * len(prompts), len(output_names), output_names)
+        print("{} output names: {}".format(len(output_names), output_names))
+        print("should be {} ")
         for prompt in prompts:
             for batch in range(batch_size):
                 print("creating batch # {} for prompt {}".format(batch, prompt))
@@ -190,13 +205,15 @@ def main(arg_dict):
                     num_steps=steps,
                     batch_size=1,
                     unconditional_guidance_scale=guidance_scale
-                )      
+                )
+                # TODO - there is an error in the logic here where there are not enough output names 
+                print("using idx {} of {}".format(idx, len(output_names)))
                 save_image(image, output_names[idx])
                 if upscale_factor != 1.0:
                     upscale_image(output_names[idx], upscale_factor)
                 idx += 1
-    
-            keras.backend.clear_session()  # Clear session to preserve memory
+                seed += 1 
+                keras.backend.clear_session()  # Clear session to preserve memory
     else:
         # create a copy of the model to save progress
         # progress_model = keras.models.clone_model(model)
@@ -207,6 +224,7 @@ def main(arg_dict):
             for batch in range(batch_size):
                 print("creating batch # {} for prompt {}".format(batch, prompt))
                 for step in range(step_hop, steps, step_hop):
+                    print("creating image with {} steps".format(step))
                     image = model.text_to_image(
                         prompt,
                         seed=seed,
@@ -220,8 +238,7 @@ def main(arg_dict):
                     idx += 1
                     # model.set_weights(model.get_weights())
                 seed += 1
-    
-            keras.backend.clear_session()  # Clear session to preserve memory
+                keras.backend.clear_session()  # Clear session to preserve memory
 
     if (plot_output):
         plot_images(image)
@@ -230,14 +247,57 @@ def main(arg_dict):
     runtime = end_time - start_time
     print("Total function runtime is {} with {} as parameters".format(runtime, arg_dict))
 
+# Define a function to prompt the user to run the program again
+def run_again():
+    while True:
+        user_input = input("Would you like to run the program again? (y/n): ").lower()
+        if user_input == "y":
+            return True
+        elif user_input == "n":
+            return False
+        else:
+            print("Invalid input. Please enter 'y' or 'n'.")
+
+def askForCLIArguments(parser):
+    args = vars(parser.parse_args())
+    print("-"*60)
+    print("I will ask you for parameter values now...")
+    print("Please press enter if you want to reuse the same values as the prior run) ")
+    print('Or type "h" to print descriptions for the variables')
+    for key, val in args.items():
+        print("-"*60)
+        while True:
+            user_input = input('For "{}" the prior value was "{}", what new value would you like?\t'.format(key, val)).lower()
+            if user_input == "":
+                print('Keeping "{}" prior value of "{}"'.format(key, val))
+                break
+            elif user_input == "h":
+                parser.print_help()
+                continue
+            else:     
+                val_type = type(val)
+                if val_type is float:
+                    args[key] = float(user_input)
+                elif val_type is int:
+                    args[key] = int(user_input)
+                elif val_type is bool:
+                    args[key] = bool(user_input) 
+                print('Changing "{}" prior value to "{}"'.format(key, val))
+                break
+    print("Great! I am going to compute for a while to generate your images using the following parameters =)")
+    print(args)
+    print("-"*60)
+    return args
+
 if __name__ == '__main__':
+    
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output_width", type=int,
-                        help="output width of generated image in pixels", default=256)
-    parser.add_argument("--output_height", type=int,
-                        help="output height of generated image in pixels", default=256)
+    parser.add_argument("--width", type=int,
+                        help="output width of generated image in pixels", default=512)
+    parser.add_argument("--height", type=int,
+                        help="output height of generated image in pixels", default=512)
     parser.add_argument("--prompts", nargs="+", type=str, help="list of prompts for the program to generate images based on",
-                        default="happy black cat floating on clouds of love")
+                        default="Fantasy painting of a happy black cat floating on clouds of love")
     parser.add_argument("--batch_size", type=int,
                         help="how many images to generate", default=1)
     parser.add_argument(
@@ -251,4 +311,33 @@ if __name__ == '__main__':
     parser.add_argument("--guidance", type=float, default=9.0, help="This is a measure of how closely the program follows the prompt (values of 5.0 - 15.0 work best)")
     args = vars(parser.parse_args())
 
-    main(args)
+    output_width = max(args["width"], 128)
+    output_height = max(args["height"], 128)
+
+    # If no CLI arguments were provided, prompt the user for them by checking arguments against default values
+    if all(v == parser.get_default(k) for k, v in args.items()):
+        args = askForCLIArguments(parser)
+    
+    print("-"*60)
+    print("Generating model...")
+    print("-"*60)
+    model = createModel(output_width, output_height)
+    print("-"*60)
+    print("Finished building model now generating images...")
+    print("-"*60)
+    main(model, args)
+
+    while run_again():
+        args = askForCLIArguments(parser)
+        print("new args: ", args)
+        if (max(args["width"], 128) != output_width) or (max(args["height"], 128) != output_height):
+            output_width = max(args["width"], 512)
+            output_height = max(args["height"], 512)
+            print("-"*60)
+            print("Generating network...")
+            print("-"*60)
+            model = createModel(output_width, output_height) 
+            print("-"*60)
+            print("Finished building model now generating images...")
+            print("-"*60)
+        main(model, args)
