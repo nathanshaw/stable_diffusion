@@ -158,6 +158,9 @@ def main(arg_dict):
     print("output names: {}".format(output_names))
     idx = 0
     #########################################################
+    if type(prompts) is str:
+        prompts = [prompts]
+
     for prompt in prompts:
         for batch in range(batch_size):
             print("creating batch # {} for prompt {}".format(batch, prompt))
@@ -175,7 +178,7 @@ def main(arg_dict):
         keras.backend.clear_session()  # Clear session to preserve memory
 
     if (plot_output):
-        plot_images(image)
+        plot_image(image)
       
     end_time = time.time()
     runtime = end_time - start_time
